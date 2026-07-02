@@ -7,11 +7,7 @@ import datetime
 st.set_page_config(page_title="Dashboard de Asignación DB", layout="wide")
 st.title("🗓️ Dashboard de Asignación de Labores (Conexión SQL Server)")
 
-# =============================================================================
-# 1. CONFIGURACIÓN DE CONEXIÓN (SEGURO DESDE SECRETS)
-# =============================================================================
-# Streamlit busca automáticamente en .streamlit/secrets.toml (local) 
-# o en la nube de Streamlit Cloud (producción)
+# --- 1. CONFIGURACIÓN DE CONEXIÓN (SEGURO DESDE SECRETS) ---
 CONN_STR = st.secrets["CONN_STR"]
 
 def ejecutar_query(query, params=None, commit=False):
@@ -42,10 +38,9 @@ COLOR_MAP = {
 DEFAULT_COLOR = '#e8daef'  # Morado claro para otras novedades no mapeadas
 
 # --- 2. CARGA DE DATOS DESDE LA DB ---
-@st.cache_data(ttl=600)  # Caché de 10 minutos para no saturar la DB
+@st.cache_data(ttl=600)  # Caché de 10 minutos
 def cargar_datos_db():
     try:
-        # Query centralizado con todos los JOINs necesarios
         query_principal = """
             SELECT 
                 p.ID_Empleado,
@@ -68,13 +63,16 @@ def cargar_datos_db():
         """
         df_completo = ejecutar_query(query_principal)
         
-        # Cargar catálogo de novedades para la leyenda
         query_novedades = "SELECT ID_Novedad, Novedad_Desc FROM N_Novedades"
         df_nov = ejecutar_query(query_novedades)
         
-        # Procesamiento de fechas en Pandas
+        # Procesamiento de fechas y tiempos en Pandas
         df_completo['Fecha'] = pd.to_datetime(df_completo['Fecha'])
+        
+        # --- NUEVAS COLUMNAS DE TIEMPO ---
+        df_completo['Año'] = df_completo['Fecha'].dt.year
         df_completo['Semana'] = df_completo['Fecha'].dt.isocalendar().week
+        
         df_completo['Dia_Nombre'] = df_completo['Fecha'].dt.day_name().map({
             'Monday': '1-Lunes', 'Tuesday': '2-Martes', 'Wednesday': '3-Miércoles',
             'Thursday': '4-Jueves', 'Friday': '5-Viernes', 'Saturday': '6-Sábado', 'Sunday': '7-Domingo'
@@ -92,7 +90,7 @@ if df.empty:
     st.warning("No se pudieron extraer datos de la base de datos o las tablas están vacías.")
     st.stop()
 
-# --- FUNCIÓN EXTRACTORA DE HORAS (SOPORTA STR Y OBJETOS TIME) ---
+# --- FUNCIÓN EXTRACTORA DE HORAS ---
 def expandir_horas(row):
     try:
         def parse_hora(val):
@@ -113,16 +111,25 @@ def expandir_horas(row):
 # --- 3. SIDEBAR: FILTROS INTERACTIVOS ---
 st.sidebar.header("Filtros del Dashboard")
 
-semanas_disponibles = sorted(df['Semana'].dropna().unique())
+# 1. Filtro de Año (Nuevo)
+anos_disponibles = sorted(df['Año'].dropna().unique())
+ano_seleccionado = st.sidebar.selectbox("Seleccione el Año", anos_disponibles)
+
+# Filtrar datos por el año seleccionado antes de calcular las semanas
+df_ano = df[df['Año'] == ano_seleccionado].copy()
+
+# 2. Filtro de Semana (Dinámico según el año)
+semanas_disponibles = sorted(df_ano['Semana'].dropna().unique())
 semana_seleccionada = st.sidebar.selectbox("Seleccione el Número de Semana", semanas_disponibles)
 
+# Modalidad de Visualización
 vista_seleccionada = st.sidebar.radio(
     "Seleccione Modalidad de Visualización",
     ("1. Por Trabajador (Ver Unidades)", "2. Por Unidad (Ver Trabajadores)")
 )
 
-# Filtrar base por la semana seleccionada
-df_semana = df[df['Semana'] == semana_seleccionada].copy()
+# Filtrar base final por la semana seleccionada
+df_semana = df_ano[df_ano['Semana'] == semana_seleccionada].copy()
 
 if "Por Trabajador" in vista_seleccionada:
     lista_empleados = sorted(df_semana['Empleado_Nam'].dropna().unique())
@@ -135,14 +142,25 @@ else:
     df_filtrado = df_semana[df_semana['Unidad_Desc'] == entidad_seleccionada]
     col_a_mostrar = 'Empleado_Nam'
 
-# --- 4. CONSTRUCCIÓN DE LA MATRIZ CALENDARIO ---
+# --- 4. CALCULAR RANGO DE FECHAS (NUEVO EN EL HEADER) ---
+try:
+    # Calculamos las fechas exactas de lunes y domingo para esa semana ISO usando la librería estándar
+    fecha_lunes = datetime.date.fromisocalendar(int(ano_seleccionado), int(semana_seleccionada), 1)
+    fecha_domingo = datetime.date.fromisocalendar(int(ano_seleccionado), int(semana_seleccionada), 7)
+    rango_fechas_str = f"{fecha_lunes.strftime('%d/%m/%Y')} al {fecha_domingo.strftime('%d/%m/%Y')}"
+except Exception:
+    # Fallback seguro por si ocurre un error de indexación de fechas
+    if not df_semana.empty:
+        rango_fechas_str = f"{df_semana['Fecha'].min().strftime('%d/%m/%Y')} al {df_semana['Fecha'].max().strftime('%d/%m/%Y')}"
+    else:
+        rango_fechas_str = "Rango no disponible"
+
+# --- 5. CONSTRUCCIÓN DE LA MATRIZ CALENDARIO ---
 if not df_filtrado.empty:
-    # Expandir horas asignadas
     df_filtrado['Hora'] = df_filtrado.apply(expandir_horas, axis=1)
     df_horario = df_filtrado.explode('Hora').dropna(subset=['Hora'])
 
     if not df_horario.empty:
-        # Generar texto de la celda incluyendo novedad si existe
         def construir_celda(row):
             texto = str(row[col_a_mostrar])
             if pd.notna(row['ID_Novedad']) and str(row['ID_Novedad']).strip() != '':
@@ -154,33 +172,28 @@ if not df_filtrado.empty:
             lambda x: COLOR_MAP.get(str(x).strip(), DEFAULT_COLOR) if pd.notna(x) else COLOR_MAP['NORMAL']
         )
 
-        # Crear tablas pivote paralelas (una para texto, otra para color)
         pivot_text = df_horario.pivot_table(index='Hora', columns='Dia_Nombre', values='Celda_Texto', aggfunc=lambda x: ' / '.join(set(x)))
         pivot_color = df_horario.pivot_table(index='Hora', columns='Dia_Nombre', values='Color_Celda', aggfunc='first')
 
-        # Reindexar para garantizar filas de 24 horas y columnas de 7 días completas
         horas_dia = [f"{h:02d}:00" for h in range(24)]
         dias_semana = ['1-Lunes', '2-Martes', '3-Miércoles', '4-Jueves', '5-Viernes', '6-Sábado', '7-Domingo']
         
         pivot_text = pivot_text.reindex(index=horas_dia, columns=dias_semana).fillna('')
         pivot_color = pivot_color.reindex(index=horas_dia, columns=dias_semana).fillna('')
 
-        # === ¡AQUÍ ESTÁ EL CAMBIO! ===
-        # Limpiamos los nombres de los días en AMBOS DataFrames para que coincidan perfectamente
+        # Sincronizamos las cabeceras de columnas limpias para evitar el ValueError anterior
         columnas_limpias = [c.split('-')[1] for c in pivot_text.columns]
         pivot_text.columns = columnas_limpias
         pivot_color.columns = columnas_limpias
-        # =============================
 
-        # Estilizar el DataFrame usando Pandas Styler
         def aplicar_estilos_matriz(x):
-            # Usamos map (o applymap en versiones antiguas de pandas) para generar los estilos CSS
             if hasattr(pivot_color, 'map'):
                 return pivot_color.fillna('').map(lambda color: f'background-color: {color}; color: #222; font-weight: bold;' if color else '')
             else:
                 return pivot_color.fillna('').applymap(lambda color: f'background-color: {color}; color: #222; font-weight: bold;' if color else '')
 
-        st.subheader(f"📅 Agenda: {entidad_seleccionada} — Semana {semana_seleccionada}")
+        # === HEADER ENRIQUECIDO (SOLICITADO) ===
+        st.subheader(f"📅 Agenda: {entidad_seleccionada} — Semana {semana_seleccionada} ({rango_fechas_str}) — {ano_seleccionado}")
         
         df_estilizado = pivot_text.style.apply(aplicar_estilos_matriz, axis=None)
         st.dataframe(df_estilizado, use_container_width=True, height=650)
@@ -189,12 +202,11 @@ if not df_filtrado.empty:
 else:
     st.warning("No se encontraron registros de asignación para los filtros seleccionados.")
 
-# --- 5. LEYENDA DINÁMICA DE NOVEDADES ---
+# --- 6. LEYENDA DINÁMICA DE NOVEDADES ---
 st.markdown("---")
 st.markdown("### 🎨 Código de Colores y Novedades")
 columnas_leyenda = st.columns(4)
 
-# Incluir la opción por defecto 'NORMAL'
 lista_leyenda = [('NORMAL', 'Programación Normal (Sin Novedad)')]
 for r in df_novedades.itertuples():
     lista_leyenda.append((str(r.ID_Novedad).strip(), str(r.Novedad_Desc)))
