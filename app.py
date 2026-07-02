@@ -5,7 +5,7 @@ import datetime
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Dashboard de Asignación DB", layout="wide")
-st.title("🗓️ Horarios de Asignación de Labores")
+st.title("🗓️ Dashboard de Asignación de Labores (Conexión SQL Server)")
 
 # --- 1. CONFIGURACIÓN DE CONEXIÓN (SEGURO DESDE SECRETS) ---
 CONN_STR = st.secrets["CONN_STR"]
@@ -111,16 +111,31 @@ def expandir_horas(row):
 # --- 3. SIDEBAR: FILTROS INTERACTIVOS ---
 st.sidebar.header("Filtros del Dashboard")
 
-# 1. Filtro de Año (Nuevo)
+# 1. Filtro de Año
 anos_disponibles = sorted(df['Año'].dropna().unique())
 ano_seleccionado = st.sidebar.selectbox("Seleccione el Año", anos_disponibles)
 
 # Filtrar datos por el año seleccionado antes de calcular las semanas
 df_ano = df[df['Año'] == ano_seleccionado].copy()
 
-# 2. Filtro de Semana (Dinámico según el año)
+# 2. Filtro de Semana (Dinámico según el año con Rango de Fechas Visible)
 semanas_disponibles = sorted(df_ano['Semana'].dropna().unique())
-semana_seleccionada = st.sidebar.selectbox("Seleccione el Número de Semana", semanas_disponibles)
+
+# === ¡NUEVA FUNCIÓN DE FORMATEO PARA EL DESPLEGABLE! ===
+def formatear_opcion_semana(num_semana):
+    """Genera la etiqueta visible en el selectbox incluyendo el rango de fechas."""
+    try:
+        lunes = datetime.date.fromisocalendar(int(ano_seleccionado), int(num_semana), 1)
+        domingo = datetime.date.fromisocalendar(int(ano_seleccionado), int(num_semana), 7)
+        return f"Semana {num_semana} ({lunes.strftime('%d/%m/%Y')} al {domingo.strftime('%d/%m/%Y')})"
+    except Exception:
+        return f"Semana {num_semana}"
+
+semana_seleccionada = st.sidebar.selectbox(
+    "Seleccione el Número de Semana", 
+    semanas_disponibles,
+    format_func=formatear_opcion_semana  # Aplica el formato dinámico aquí
+)
 
 # Modalidad de Visualización
 vista_seleccionada = st.sidebar.radio(
@@ -142,14 +157,12 @@ else:
     df_filtrado = df_semana[df_semana['Unidad_Desc'] == entidad_seleccionada]
     col_a_mostrar = 'Empleado_Nam'
 
-# --- 4. CALCULAR RANGO DE FECHAS (NUEVO EN EL HEADER) ---
+# --- 4. CALCULAR RANGO DE FECHAS (PARA EL HEADER PRINCIPAL) ---
 try:
-    # Calculamos las fechas exactas de lunes y domingo para esa semana ISO usando la librería estándar
     fecha_lunes = datetime.date.fromisocalendar(int(ano_seleccionado), int(semana_seleccionada), 1)
     fecha_domingo = datetime.date.fromisocalendar(int(ano_seleccionado), int(semana_seleccionada), 7)
     rango_fechas_str = f"{fecha_lunes.strftime('%d/%m/%Y')} al {fecha_domingo.strftime('%d/%m/%Y')}"
 except Exception:
-    # Fallback seguro por si ocurre un error de indexación de fechas
     if not df_semana.empty:
         rango_fechas_str = f"{df_semana['Fecha'].min().strftime('%d/%m/%Y')} al {df_semana['Fecha'].max().strftime('%d/%m/%Y')}"
     else:
@@ -192,7 +205,7 @@ if not df_filtrado.empty:
             else:
                 return pivot_color.fillna('').applymap(lambda color: f'background-color: {color}; color: #222; font-weight: bold;' if color else '')
 
-        # === HEADER ENRIQUECIDO (SOLICITADO) ===
+        # HEADER ENRIQUECIDO
         st.subheader(f"📅 Agenda: {entidad_seleccionada} — Semana {semana_seleccionada} ({rango_fechas_str}) — {ano_seleccionado}")
         
         df_estilizado = pivot_text.style.apply(aplicar_estilos_matriz, axis=None)
