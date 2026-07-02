@@ -14,7 +14,6 @@ CONN_STR = st.secrets["CONN_STR"]
 def ejecutar_query(query, params=None, commit=False):
 
     try:
-        """Función utilitaria para manejar la conexión y consultas."""
         with pyodbc.connect(CONN_STR, timeout=5) as conn:
             with conn.cursor() as cursor:
                 if commit:
