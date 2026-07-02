@@ -6,7 +6,7 @@ import datetime
 pyodbc.pooling = False
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Dashboard de Asignación DB", layout="wide")
-st.title("🗓️ Dashboard de Asignación de Labores (Conexión SQL Server)")
+st.title("🗓️ Calendario Asignación de Labores")
 
 # --- 1. CONFIGURACIÓN DE CONEXIÓN (SEGURO DESDE SECRETS) ---
 CONN_STR = st.secrets["CONN_STR"]
