@@ -165,12 +165,20 @@ if not df_filtrado.empty:
         pivot_text = pivot_text.reindex(index=horas_dia, columns=dias_semana).fillna('')
         pivot_color = pivot_color.reindex(index=horas_dia, columns=dias_semana).fillna('')
 
-        # Limpiar los nombres de los días en la cabecera horizontal
-        pivot_text.columns = [c.split('-')[1] for c in pivot_text.columns]
+        # === ¡AQUÍ ESTÁ EL CAMBIO! ===
+        # Limpiamos los nombres de los días en AMBOS DataFrames para que coincidan perfectamente
+        columnas_limpias = [c.split('-')[1] for c in pivot_text.columns]
+        pivot_text.columns = columnas_limpias
+        pivot_color.columns = columnas_limpias
+        # =============================
 
         # Estilizar el DataFrame usando Pandas Styler
         def aplicar_estilos_matriz(x):
-            return pivot_color.fillna('').map(lambda color: f'background-color: {color}; color: #222; font-weight: bold;' if color else '')
+            # Usamos map (o applymap en versiones antiguas de pandas) para generar los estilos CSS
+            if hasattr(pivot_color, 'map'):
+                return pivot_color.fillna('').map(lambda color: f'background-color: {color}; color: #222; font-weight: bold;' if color else '')
+            else:
+                return pivot_color.fillna('').applymap(lambda color: f'background-color: {color}; color: #222; font-weight: bold;' if color else '')
 
         st.subheader(f"📅 Agenda: {entidad_seleccionada} — Semana {semana_seleccionada}")
         
