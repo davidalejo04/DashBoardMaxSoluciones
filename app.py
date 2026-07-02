@@ -3,6 +3,7 @@ import pandas as pd
 import pyodbc
 import datetime
 
+pyodbc.pooling = False
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Dashboard de Asignación DB", layout="wide")
 st.title("🗓️ Dashboard de Asignación de Labores (Conexión SQL Server)")
@@ -11,18 +12,26 @@ st.title("🗓️ Dashboard de Asignación de Labores (Conexión SQL Server)")
 CONN_STR = st.secrets["CONN_STR"]
 
 def ejecutar_query(query, params=None, commit=False):
-    """Función utilitaria para manejar la conexión y consultas."""
-    with pyodbc.connect(CONN_STR) as conn:
-        with conn.cursor() as cursor:
-            if commit:
-                if params:
-                    cursor.execute(query, params)
+
+    try:
+        """Función utilitaria para manejar la conexión y consultas."""
+        with pyodbc.connect(CONN_STR, timeout=5) as conn:
+            with conn.cursor() as cursor:
+                if commit:
+                    if params:
+                        cursor.execute(query, params)
+                    else:
+                        cursor.execute(query)
+                    conn.commit()
+                    return True
                 else:
-                    cursor.execute(query)
-                conn.commit()
-                return True
-            else:
-                return pd.read_sql(query, conn)
+                    return pd.read_sql(query, conn)
+    except pyodbc.OperationalError as e:
+        # Si la conexión falló o expiró, limpiamos la caché para forzar un reintento limpio
+        st.cache_data.clear()
+        st.error("🔄 La conexión con el servidor se durmio. Por favor, recarga la página.🙃")
+        return pd.DataFrame()
+                
 
 # --- DICCIONARIO DE COLORES PARA NOVEDADES ---
 COLOR_MAP = {
