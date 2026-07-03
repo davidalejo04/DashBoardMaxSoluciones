@@ -201,6 +201,12 @@ with tab_agenda:
     else:
         st.warning("No se encontraron registros de asignación para los filtros seleccionados.")
 
+# --- Colócalo en la sección de filtros de la barra lateral ---
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🔄 Sincronizar / Refrescar Datos", use_container_width=True):
+        st.cache_data.clear()  # Borra la memoria vieja de Streamlit
+        st.rerun()             # Fuerza a la app a ejecutarse de nuevo e ir a Azure SQL
+
 # ------------------------------------------------------------------------------
 # PESTAÑA 2: NUEVA pestaña - RESUMEN CONSOLIDADO DE HORAS (MÉTRICAS)
 # ------------------------------------------------------------------------------
