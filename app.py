@@ -53,7 +53,8 @@ DEFAULT_COLOR = '#e8daef'
 @st.cache_data(ttl=600)
 def cargar_datos_db():
     try:
-        # Consulta SQL con LEFT JOIN a Vigencia_Empleados para validar ID_Cargo de Oficios Varios
+        # CORRECCIÓN TEMPORAL: El JOIN ahora exige que la fecha del registro esté dentro del rango de vigencia del cargo
+        # NOTA: Cambiar 'Fecha_Inicio' y 'Fecha_Fin' si en tu DB se llaman diferente (ej. Desde / Hasta)
         query_principal = """
             SELECT 
                 COALESCE(p.ID_Empleado, ej.ID_Empleado) AS ID_Empleado,
@@ -80,6 +81,8 @@ def cargar_datos_db():
             LEFT JOIN N_Empleados e_ej ON TRIM(ej.ID_Empleado) = TRIM(e_ej.ID_Empleado)
             LEFT JOIN N_Unidades u_ej ON TRIM(ej.ID_Unidad) = TRIM(u_ej.ID_Unidad)
             LEFT JOIN Vigencia_Empleados ve ON TRIM(ve.ID_Empleado) = TRIM(COALESCE(p.ID_Empleado, ej.ID_Empleado))
+                                        AND COALESCE(p.Fecha, ej.Fecha) >= ve.Fecha_Ingreso
+                                        AND (ve.Fecha_Salida IS NULL OR COALESCE(p.Fecha, ej.Fecha) <= ve.Fecha_Salida)
             WHERE p.ID_Empleado IS NOT NULL OR TRIM(ve.ID_Cargo) = 'OV001'
         """
         df_completo = ejecutar_query(query_principal)
@@ -198,16 +201,13 @@ with tab_agenda:
 
             df_horario['Color_Celda'] = df_horario.apply(asignar_color_celda, axis=1)
 
-            # Pivot para texto concatenando con un slash '/' si hay superposiciones
             pivot_text = df_horario.pivot_table(index='Hora', columns='Dia_Nombre', values='Celda_Texto', aggfunc=lambda x: ' / '.join(set(x)))
             
-            # CORRECCIÓN DE PRIORIDAD DE COLOR: Si en la misma hora hay cruces, prioriza el color que NO sea el verde normal
+            # Prioridad visual: ante superposiciones en la misma hora, prioriza el color de la novedad sobre el verde normal
             def determinar_color_prioritario(colores):
                 colores_validos = [c for c in colores if pd.notna(c) and c != '']
                 if not colores_validos:
                     return COLOR_MAP['NORMAL']
-                
-                # Si existe alguna novedad real (cuyo color no sea el verde NORMAL), esa tiene la prioridad visual
                 for color in colores_validos:
                     if color != COLOR_MAP['NORMAL']:
                         return color
