@@ -53,7 +53,7 @@ DEFAULT_COLOR = '#e8daef'
 @st.cache_data(ttl=600)
 def cargar_datos_db():
     try:
-        # CORRECCIÓN: Se incorpora el LEFT JOIN a Vigencia_Empleados (ve) para traer ID_Cargo de manera correcta
+        # Consulta SQL con LEFT JOIN a Vigencia_Empleados para validar ID_Cargo de Oficios Varios
         query_principal = """
             SELECT 
                 COALESCE(p.ID_Empleado, ej.ID_Empleado) AS ID_Empleado,
@@ -198,8 +198,24 @@ with tab_agenda:
 
             df_horario['Color_Celda'] = df_horario.apply(asignar_color_celda, axis=1)
 
+            # Pivot para texto concatenando con un slash '/' si hay superposiciones
             pivot_text = df_horario.pivot_table(index='Hora', columns='Dia_Nombre', values='Celda_Texto', aggfunc=lambda x: ' / '.join(set(x)))
-            pivot_color = df_horario.pivot_table(index='Hora', columns='Dia_Nombre', values='Color_Celda', aggfunc='first')
+            
+            # CORRECCIÓN DE PRIORIDAD DE COLOR: Si en la misma hora hay cruces, prioriza el color que NO sea el verde normal
+            def determinar_color_prioritario(colores):
+                colores_validos = [c for c in colores if pd.notna(c) and c != '']
+                if not colores_validos:
+                    return COLOR_MAP['NORMAL']
+                
+                # Si existe alguna novedad real (cuyo color no sea el verde NORMAL), esa tiene la prioridad visual
+                for color in colores_validos:
+                    if color != COLOR_MAP['NORMAL']:
+                        return color
+                return colores_validos[0]
+
+            pivot_color = df_horario.pivot_table(
+                index='Hora', columns='Dia_Nombre', values='Color_Celda', aggfunc=determinar_color_prioritario
+            )
 
             horas_dia = [f"{h:02d}:00" for h in range(24)]
             dias_semana = ['1-Lunes', '2-Martes', '3-Miércoles', '4-Jueves', '5-Viernes', '6-Sábado', '7-Domingo']
