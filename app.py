@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 import pyodbc
 import datetime
+import time
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Dashboard de Asignación DB", layout="wide")
-st.title("🗓️ Systema de Gestión y Asignación de Labores")
+st.title("🗓️ Sistema de Gestión y Asignación de Labores")
 
 # === EVITAR CONGELAMIENTOS EN INACTIVIDAD ===
 pyodbc.pooling = False 
@@ -13,20 +14,33 @@ pyodbc.pooling = False
 # --- CONFIGURACIÓN DE CONEXIÓN ---
 CONN_STR = st.secrets["CONN_STR"]
 
+import time  # Asegúrate de tener este import al inicio del archivo
+
 def ejecutar_query(query, params=None):
-    """Función de solo lectura optimizada con desconexión rápida (Timeout 5s)."""
-    try:
-        with pyodbc.connect(CONN_STR, timeout=5) as conn:
-            with conn.cursor() as cursor:
-                if params:
-                    return pd.read_sql(query, conn, params=params)
-                else:
-                    return pd.read_sql(query, conn)
-    except pyodbc.OperationalError:
-        # Si la base de datos se durmió por inactividad, limpiamos la caché automáticamente
-        st.cache_data.clear()
-        st.error("🔄 La conexión con Azure SQL expiró por inactividad. Los canales han sido reiniciados. Por favor, refresque la página.")
-        return pd.DataFrame()
+    """Función de solo lectura con reintentos automáticos para manejar el despertar de Azure SQL."""
+    intentos_maximos = 4
+    
+    for intento in range(intentos_maximos):
+        try:
+            # Mantenemos el timeout corto de 5 segundos por intento para no congelar la app eternamente
+            with pyodbc.connect(CONN_STR, timeout=5) as conn:
+                with conn.cursor() as cursor:
+                    if params:
+                        return pd.read_sql(query, conn, params=params)
+                    else:
+                        return pd.read_sql(query, conn)
+                        
+        except pyodbc.OperationalError as e:
+            # Si es el último intento y falló, arrojamos el error definitivo
+            if intento == intentos_maximos - 1:
+                st.cache_data.clear()
+                st.error("🥶 El servidor de la base de datos tardó demasiado en responder. Por favor, refresca la página 🔄.")
+                return pd.DataFrame()
+            
+            # Si falló pero quedan intentos, significa que Azure se está despertando.
+            # Mostramos un spinner dinámico en la interfaz en lugar de dejar la app rota.
+            with st.spinner(f"⏳ El servidor de datos se estaba durmiendo. Despertándolo de forma segura...😪 (Intento {intento + 1}/{intentos_maximos})"):
+                time.sleep(4)  # Esperamos 4 segundos antes de volver a intentar
 
 # --- DICCIONARIO DE COLORES PARA NOVEDADES (VISTA AGENDA) ---
 COLOR_MAP = {
