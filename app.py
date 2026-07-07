@@ -53,7 +53,7 @@ DEFAULT_COLOR = '#e8daef'
 @st.cache_data(ttl=600)
 def cargar_datos_db():
     try:
-        # Se implementa FULL OUTER JOIN y COALESCE para traer ejecuciones de UN30 aunque no estén planeadas
+        # Se remueve UN30. Se integra FULL OUTER JOIN para traer registros de Ejecución de Cargo 'OV001' sin programación.
         query_principal = """
             SELECT 
                 COALESCE(p.ID_Empleado, ej.ID_Empleado) AS ID_Empleado,
@@ -65,6 +65,7 @@ def cargar_datos_db():
                 COALESCE(t.Punch_In, t_ej.Punch_In) AS Punch_In,
                 COALESCE(t.Punch_Out, t_ej.Punch_Out) AS Punch_Out,
                 ej.ID_Novedad,
+                ej.ID_Cargo,
                 ISNULL(ej.Duracion_Novedad, 0) AS Duracion_Novedad,
                 CASE WHEN p.ID_Empleado IS NULL THEN 1 ELSE 0 END AS Es_Solo_Ejecucion
             FROM Programacion p
@@ -78,7 +79,7 @@ def cargar_datos_db():
             LEFT JOIN N_Turnos t_ej ON TRIM(ej.ID_Turno) = TRIM(t_ej.ID_Turno)
             LEFT JOIN N_Empleados e_ej ON TRIM(ej.ID_Empleado) = TRIM(e_ej.ID_Empleado)
             LEFT JOIN N_Unidades u_ej ON TRIM(ej.ID_Unidad) = TRIM(u_ej.ID_Unidad)
-            WHERE p.ID_Empleado IS NOT NULL OR TRIM(ej.ID_Unidad) = 'UN30'
+            WHERE p.ID_Empleado IS NOT NULL OR TRIM(ej.ID_Cargo) = 'OV001'
         """
         df_completo = ejecutar_query(query_principal)
         
@@ -128,7 +129,7 @@ def expandir_horas(row):
 tab_agenda, tab_resumen = st.tabs(["📅 Vista de Agenda Semanal", "📊 Resumen Consolidado de Horas"])
 
 # ------------------------------------------------------------------------------
-# PESTAÑA 1: VISTA DE AGENDA SEMANAL (Incluye UN30 No Planeados)
+# PESTAÑA 1: VISTA DE AGENDA SEMANAL
 # ------------------------------------------------------------------------------
 with tab_agenda:
     st.sidebar.header("Filtros: Agenda Semanal")
@@ -183,14 +184,19 @@ with tab_agenda:
                 texto = str(row[col_a_mostrar])
                 if pd.notna(row['ID_Novedad']) and str(row['ID_Novedad']).strip() != '':
                     texto += f" [{row['ID_Novedad'].strip()}]"
-                elif row['Es_Solo_Ejecucion'] == 1:
-                    texto += " [UN30 No Fijo]"
                 return texto
 
             df_horario['Celda_Texto'] = df_horario.apply(construir_celda, axis=1)
-            df_horario['Color_Celda'] = df_horario['ID_Novedad'].apply(
-                lambda x: COLOR_MAP.get(str(x).strip(), DEFAULT_COLOR) if pd.notna(x) and str(x).strip() != '' else COLOR_MAP['NORMAL']
-            )
+            
+            # Asignación de color: si es OV001 con AS001 se pinta NORMAL (verde), de lo contrario usa el mapa o default.
+            def asignar_color_celda(r):
+                cargo = str(r['ID_Cargo']).strip() if pd.notna(r['ID_Cargo']) else ''
+                nov = str(r['ID_Novedad']).strip() if pd.notna(r['ID_Novedad']) else ''
+                if cargo == 'OV001' and nov == 'AS001':
+                    return COLOR_MAP['NORMAL']
+                return COLOR_MAP.get(nov, DEFAULT_COLOR) if nov != '' else COLOR_MAP['NORMAL']
+
+            df_horario['Color_Celda'] = df_horario.apply(asignar_color_celda, axis=1)
 
             pivot_text = df_horario.pivot_table(index='Hora', columns='Dia_Nombre', values='Celda_Texto', aggfunc=lambda x: ' / '.join(set(x)))
             pivot_color = df_horario.pivot_table(index='Hora', columns='Dia_Nombre', values='Color_Celda', aggfunc='first')
@@ -222,8 +228,13 @@ with tab_agenda:
     else:
         st.warning("No se encontraron registros de asignación para los filtros seleccionados.")
 
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🔄 Sincronizar / Refrescar Datos", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
 # ------------------------------------------------------------------------------
-# PESTAÑA 2: RESUMEN CONSOLIDADO DE HORAS (MÉTRICAS CORREGIDAS Y EXTENDIDAS)
+# PESTAÑA 2: RESUMEN CONSOLIDADO DE HORAS
 # ------------------------------------------------------------------------------
 with tab_resumen:
     st.subheader("📊 Reporte Consolidado de Horas y Control de Novedades")
@@ -238,17 +249,8 @@ with tab_resumen:
     fecha_final = col_f2.date_input("📆 Fecha Final", value=fecha_max_db, min_value=fecha_min_db, max_value=fecha_max_db)
     
     vista_resumen = col_f3.radio(
-        "Visualizar Métricas por:",
-        ("Trabajador", "Unidad"),
-        horizontal=True,
-        key="radio_resumen_tab"
+        "Visualizar Métricas por:", ("Trabajador", "Unidad"), horizontal=True, key="radio_resumen_tab"
     )
-
-    # Botón de refresco manual integrado
-    st.sidebar.markdown("---")
-    if st.sidebar.button("🔄 Sincronizar / Refrescar Datos", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
 
     if fecha_inicio > fecha_final:
         st.error("❌ Error: La Fecha Inicial no puede ser mayor que la Fecha Final.")
@@ -258,30 +260,51 @@ with tab_resumen:
         if df_filtrado_fechas.empty:
             st.warning("⏳ No se encontraron datos registrados dentro de este rango de fechas.")
         else:
-            # Cálculo de horas base por fila
             df_filtrado_fechas['Horas_Totales_Fila'] = df_filtrado_fechas.apply(lambda r: len(expandir_horas(r)), axis=1)
             
-            df_filtrado_fechas['Es_Novedad'] = df_filtrado_fechas['ID_Novedad'].apply(
-                lambda x: pd.notna(x) and str(x).strip() != '' and str(x).strip() != 'NORMAL'
-            )
+            # Clasificación de Novedad: Si es OV001 con AS001, NO cuenta como novedad destructiva (es asistencia base).
+            def evaluar_es_novedad(r):
+                cargo = str(r['ID_Cargo']).strip() if pd.notna(r['ID_Cargo']) else ''
+                nov = str(r['ID_Novedad']).strip() if pd.notna(r['ID_Novedad']) else ''
+                if cargo == 'OV001' and nov == 'AS001':
+                    return False
+                return nov != '' and nov != 'NORMAL'
+
+            df_filtrado_fechas['Es_Novedad'] = df_filtrado_fechas.apply(evaluar_es_novedad, axis=1)
             
-            # Lógica de distribución: si es UN30 sin planeación (Es_Solo_Ejecucion == 1), planeadas es 0
-            df_filtrado_fechas['Horas_Planeadas'] = df_filtrado_fechas.apply(
-                lambda r: 0 if r['Es_Solo_Ejecucion'] == 1 else r['Horas_Totales_Fila'], axis=1
-            )
-            df_filtrado_fechas['Horas_Novedad'] = df_filtrado_fechas.apply(
-                lambda r: r['Horas_Totales_Fila'] if r['Es_Novedad'] else 0, axis=1
-            )
-            df_filtrado_fechas['Horas_Trabajadas'] = df_filtrado_fechas.apply(
-                lambda r: 0 if r['Es_Novedad'] or r['Es_Solo_Ejecucion'] == 1 else r['Horas_Totales_Fila'], axis=1
-            )
+            # Desglose de horas bajo las nuevas directrices
+            def calcular_horas_planeadas(r):
+                cargo = str(r['ID_Cargo']).strip() if pd.notna(r['ID_Cargo']) else ''
+                nov = str(r['ID_Novedad']).strip() if pd.notna(r['ID_Novedad']) else ''
+                if r['Es_Solo_Ejecucion'] == 1:
+                    if cargo == 'OV001' and nov == 'AS001':
+                        return r['Horas_Totales_Fila']
+                    return 0
+                return r['Horas_Totales_Fila']
+
+            def calcular_horas_trabajadas(r):
+                if r['Es_Novedad']:
+                    return 0
+                cargo = str(r['ID_Cargo']).strip() if pd.notna(r['ID_Cargo']) else ''
+                nov = str(r['ID_Novedad']).strip() if pd.notna(r['ID_Novedad']) else ''
+                if r['Es_Solo_Ejecucion'] == 1:
+                    if cargo == 'OV001' and nov == 'AS001':
+                        return r['Horas_Totales_Fila']
+                    return 0
+                return r['Horas_Totales_Fila']
+
+            df_filtrado_fechas['Horas_Planeadas'] = df_filtrado_fechas.apply(calcular_horas_planeadas, axis=1)
+            df_filtrado_fechas['Horas_Novedad'] = df_filtrado_fechas.apply(lambda r: r['Horas_Totales_Fila'] if r['Es_Novedad'] else 0, axis=1)
+            df_filtrado_fechas['Horas_Trabajadas'] = df_filtrado_fechas.apply(calcular_horas_trabajadas, axis=1)
             df_filtrado_fechas['Cantidad_Novedades'] = df_filtrado_fechas['Es_Novedad'].astype(int)
+            
+            # Parsear campo de duración de novedad de forma segura
             df_filtrado_fechas['Duracion_Novedad_Num'] = pd.to_numeric(df_filtrado_fechas['Duracion_Novedad'], errors='coerce').fillna(0)
 
             col_grupo = 'Empleado_Nam' if vista_resumen == "Trabajador" else 'Unidad_Desc'
             col_label = 'Trabajador' if vista_resumen == "Trabajador" else 'Unidad'
 
-            # Agrupamiento por la entidad seleccionada
+            # Agrupamiento y consolidación de métricas
             df_resumen_grouped = df_filtrado_fechas.groupby(col_grupo).agg(
                 Horas_Planeadas=('Horas_Planeadas', 'sum'),
                 Horas_Trabajadas=('Horas_Trabajadas', 'sum'),
@@ -290,33 +313,33 @@ with tab_resumen:
                 Cantidad_Novedades=('Cantidad_Novedades', 'sum')
             ).reset_index()
 
-            # Cálculo de la sumatoria global de horas trabajadas para el cálculo del aporte
+            # Sumatoria global de las horas trabajadas efectivas para calcular el peso o aporte
             total_horas_trabajadas_global = df_resumen_grouped['Horas_Trabajadas'].sum()
 
-            # CORRECCIÓN DE PORCENTAJE (Se multiplica por 100 y se define la escala correcta de la barra del 0 al 100)
+            # CORRECCIÓN: Multiplicar por 100.0 para que la escala del ProgressColumn renderice correctamente el % real (y no 1%)
             df_resumen_grouped['% Horas Trabajadas'] = df_resumen_grouped.apply(
                 lambda r: (r['Horas_Trabajadas'] / r['Horas_Planeadas'] * 100.0) if r['Horas_Planeadas'] > 0 else 0.0, axis=1
             )
 
-            # NUEVO CAMPO: % de aporte del trabajador/unidad sobre el total global laborado
+            # NUEVO CAMPO: % de Aporte individual sobre el total global laborado en la empresa
             df_resumen_grouped['% Aporte'] = df_resumen_grouped.apply(
                 lambda r: (r['Horas_Trabajadas'] / total_horas_trabajadas_global * 100.0) if total_horas_trabajadas_global > 0 else 0.0, axis=1
             )
 
-            # Renombrar columnas para la visualización final
+            # Renombrar columnas de cara al usuario
             df_resumen_final = df_resumen_grouped.rename(columns={
                 col_grupo: col_label,
                 'Horas_Planeadas': 'Horas Planeadas',
                 'Horas_Trabajadas': 'Horas Trabajadas',
                 'Horas_Novedades': 'Horas de Novedades',
-                'Duracion_Novedad_Total': 'Duración Novedad (Campo)',
+                'Duracion_Novedad_Total': 'Suma Duración Novedad',
                 'Cantidad_Novedades': 'Cantidad de Novedades'
             })
 
-            # Reordenación de columnas para incluir las nuevas métricas estéticas de porcentaje
+            # Reordenación de columnas para incluir las nuevas barras dinámicas
             columnas_ordenadas = [
                 col_label, '% Aporte', 'Horas Planeadas', 'Horas Trabajadas', 
-                'Horas de Novedades', 'Duración Novedad (Campo)', 'Cantidad de Novedades', '% Horas Trabajadas'
+                'Horas de Novedades', 'Suma Duración Novedad', 'Cantidad de Novedades', '% Horas Trabajadas'
             ]
             df_resumen_final = df_resumen_final[columnas_ordenadas]
 
@@ -328,7 +351,7 @@ with tab_resumen:
                     col_label: st.column_config.TextColumn(f"👤 {col_label}" if col_label == "Trabajador" else f"🏢 {col_label}", width="medium"),
                     "% Aporte": st.column_config.ProgressColumn(
                         "📈 % Aporte (vs Total)",
-                        help="Porcentaje de aporte de esta fila sobre el total general de horas efectivas laboradas.",
+                        help="Porcentaje de aporte que representan las horas trabajadas de este registro sobre el total global de la operación.",
                         format="%.1f%%",
                         min_value=0.0,
                         max_value=100.0
@@ -336,7 +359,7 @@ with tab_resumen:
                     "Horas Planeadas": st.column_config.NumberColumn("⏱️ Hrs Planeadas", format="%d hrs"),
                     "Horas Trabajadas": st.column_config.NumberColumn("✅ Hrs Trabajadas", format="%d hrs"),
                     "Horas de Novedades": st.column_config.NumberColumn("⚠️ Hrs Novedades", format="%d hrs"),
-                    "Duración Novedad (Campo)": st.column_config.NumberColumn("⏳ Suma Duración", format="%.1f hrs"),
+                    "Suma Duración Novedad": st.column_config.NumberColumn("⏳ Suma Duración", format="%.1f hrs"),
                     "Cantidad de Novedades": st.column_config.NumberColumn("🚨 Cant. Novedades", format="%d"),
                     "% Horas Trabajadas": st.column_config.ProgressColumn(
                         "📊 % Horas Trabajadas",
@@ -351,7 +374,7 @@ with tab_resumen:
                 height=500
             )
 
-# --- LEYENDA DINÁMICA GLOBAL DE NOVEDADES (AL PIE) ---
+# --- LEYENDA DINÁMICA GLOBAL DE NOVEDADES ---
 st.markdown("---")
 st.markdown("### 🎨 Código de Colores y Referencia de Novedades")
 columnas_leyenda = st.columns(4)
